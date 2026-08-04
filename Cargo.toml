@@ -1,20 +1,20 @@
 [package]
 name = "armature-jwt"
 version = "0.2.1"
-edition.workspace = true
-rust-version.workspace = true
+edition = "2024"
+rust-version = "1.94.1"
 autobenches = false  # Disable auto-discovery, use explicit [[bench]] only
-authors.workspace = true
-license.workspace = true
+authors = ["Joseph Quinn <quinn.josephr@proton.me>"]
+license = "Apache-2.0"
 repository = "https://github.com/quinnjr/armature-jwt"
-homepage.workspace = true
+homepage = "https://quinnjr.github.io/armature"
 description = "JWT token handling for Armature authentication"
 keywords = ["jwt", "token", "authentication", "security"]
 categories = ["authentication", "web-programming"]
 
 [dependencies]
-armature-core = { path = "../armature-core", version = "0" }
-armature-log = { path = "../armature-log", version = "0" }
+armature-core = { version = "0" }
+armature-log = { version = "0" }
 jsonwebtoken = { version = "10.4", features = ["rust_crypto"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
