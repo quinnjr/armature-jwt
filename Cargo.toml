@@ -3,6 +3,7 @@ name = "armature-jwt"
 version = "0.2.1"
 edition.workspace = true
 rust-version.workspace = true
+autobenches = false  # Disable auto-discovery, use explicit [[bench]] only
 authors.workspace = true
 license.workspace = true
 repository = "https://github.com/quinnjr/armature-jwt"
@@ -22,6 +23,12 @@ chrono = { version = "0.4", features = ["serde"] }
 base64 = "0.22"
 
 [dev-dependencies]
+criterion = { version = "0.8", features = ["html_reports"] }
 cargo-husky = { version = "1.5", default-features = false, features = ["user-hooks"] }
 tokio-test = "0.4"
 
+# Explicit bench targets only: a stray file under benches/ should not silently
+# become a target.
+[[bench]]
+name = "jwt"
+harness = false
