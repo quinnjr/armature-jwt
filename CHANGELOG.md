@@ -9,12 +9,11 @@ Earlier changes are recorded in the workspace [`CHANGELOG.md`](../CHANGELOG.md).
 
 ## [Unreleased]
 
-### Added
-
-- Adopted the `jwt` criterion benchmark (token signing and verification across algorithms) from the root package's `benches/security_benchmarks.rs`. Run it with `cargo bench -p armature-jwt --bench jwt`. The crate now sets `autobenches = false`, so a new file under `benches/` needs an explicit `[[bench]]` entry.
+## [0.4.0] - 2026-09-15
 
 ### Changed
 
+- **Breaking:** requires `armature-core` 0.10 (was `0.9`); its types appear in this crate's API, so the requirement change is breaking here and the minor moves. Part of the `armature-core` 0.10 release train.
 - **`jsonwebtoken` 10.4 → 11.0 (breaking for dependents).** This crate re-exports `Algorithm`, `DecodingKey`, `EncodingKey`, `Header` and `Validation`, and exposes `jsonwebtoken::errors::Error` through `JwtError::EncodingError`, so those types are now the 11.x types. Upstream changes visible through the re-exports: `Algorithm` is `#[non_exhaustive]`; `Header.extras` is an `Extras` struct instead of `HashMap<String, String>`; `Validation::insecure_disable_signature_validation` is gone (use `decode_unverified`); `EncodingKey::inner` is renamed `as_bytes`; `DecodingKey::as_bytes` and both `try_get_hmac_secret` methods are replaced by `DecodingKey::try_get_as_bytes`. Token validation (signature, algorithm allow-list, `exp`/`nbf`/leeway, `iss`/`aud`) behaves as before. HMAC signers and verifiers now also reject non-HMAC keys when they are built.
 - `base64` 0.22 → 0.23 (tests and the fuzz harness only).
 
