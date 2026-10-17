@@ -24,8 +24,9 @@ use armature_jwt::{JwtManager, JwtConfig, StandardClaims};
 use std::time::Duration;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Create JWT manager
-    let config = JwtConfig::new("your-secret-key".to_string())
+    // Create JWT manager. The HMAC secret must be at least 32 random bytes;
+    // empty, short and placeholder secrets are rejected with an error.
+    let config = JwtConfig::new(std::env::var("JWT_SECRET")?)?
         .with_expiration(Duration::from_secs(3600));
     let manager = JwtManager::new(config)?;
 
@@ -48,7 +49,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 use armature_jwt::{JwtManager, JwtConfig, StandardClaims};
 
 # fn main() -> Result<(), Box<dyn std::error::Error>> {
-# let config = JwtConfig::new("secret".to_string());
+# let config = JwtConfig::new("kV9pQ2xR7tW4yZ1bN6mC3fH8jL5sD0gA".to_string())?;
 # let manager = JwtManager::new(config)?;
 # let claims = StandardClaims::new();
 // Generate token pair (access + refresh)

@@ -9,6 +9,24 @@ Earlier changes are recorded in the workspace [`CHANGELOG.md`](../CHANGELOG.md).
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-10-17
+
+### Security
+
+- **Breaking:** `JwtConfig::new` now returns `Result<JwtConfig>` and rejects HMAC secrets that are empty, shorter than 32 bytes (`MIN_HMAC_SECRET_LEN`), known placeholders (`change-me-in-production`, `default-secret-change-me`, `CHANGE_ME_IN_PRODUCTION`, `secret`, …) or trivially low-entropy. `JwtService::new`/`verify_only` (and so `JwtManager::new`/`verify_only`) re-validate the config, so a weak secret assigned to the public `secret` field or deserialized from a file is rejected too. New `config::validate_hmac_secret` and `JwtConfig::validate`. Migration: `JwtConfig::new(secret)?` with a ≥ 32-byte random secret (e.g. `openssl rand -base64 48`).
+- **Breaking:** removed `impl Default for JwtConfig` (it used the public secret `"change-me-in-production"`) and `impl Default for JwtManager`. Migration: construct from real key material.
+- Access and refresh tokens are now distinguishable by header as well as claim: `generate_token_pair` sets `typ: "at+jwt"` on access tokens and `typ: "refresh+jwt"` on refresh tokens. New `JwtManager::verify_access` / `JwtService::verify_access` reject refresh tokens (`token_use` present and ≠ `"access"`, or the refresh `typ`) — use it to authenticate requests. **Breaking:** `refresh_token` now also requires the refresh `typ` header, so refresh tokens minted by earlier versions must be re-issued (users log in again once).
+- `JwtConfig.secret` and `JwtConfig.private_key` are redacted from `Debug` and skipped when serializing (still deserialized). `Token` and `TokenPair` redact their tokens from `Debug` (they stay `Serialize`: they are the login response body).
+- `jsonwebtoken` now uses the `aws_lc_rs` backend instead of `rust_crypto`, removing the `rsa` crate (RUSTSEC-2023-0071, Marvin timing side channel) from this crate's dependency tree. The provider is installed explicitly, so a build in which another crate enables `rust_crypto` does not panic.
+
+### Changed
+
+- **Breaking:** `decode_unverified` is renamed `decode_unverified_insecure` (on `JwtManager` and `JwtService`), with documentation stating its claims are attacker-controlled. The name makes every call site self-evidently a non-verifying read, the same convention as `jsonwebtoken::dangerous::insecure_decode`. Migration: rename the call, and use `verify`/`verify_access` anywhere the claims drive a decision.
+
+### Added
+
+- `JwtConfig::with_key_pair(private, public, algorithm)`, and support for `PS256`/`PS384`/`PS512` and `EdDSA` keys in `JwtConfig` (previously rejected as unsupported).
+
 ## [0.4.0] - 2026-09-15
 
 ### Changed
