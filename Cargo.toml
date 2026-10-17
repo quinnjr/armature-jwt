@@ -15,7 +15,10 @@ categories = ["authentication", "web-programming"]
 [dependencies]
 armature-core = { version = "0.10" }
 armature-log = { version = "0.2" }
-jsonwebtoken = { version = "11.0", features = ["rust_crypto"] }
+# `aws_lc_rs` backend (not `rust_crypto`): the RustCrypto backend pulls the `rsa`
+# crate, which is affected by the Marvin timing side channel (RUSTSEC-2023-0071)
+# with no fixed release. aws-lc-rs is constant-time and FIPS-capable.
+jsonwebtoken = { version = "11.0", default-features = false, features = ["use_pem", "aws_lc_rs"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 thiserror = "2.0"

@@ -4,6 +4,19 @@ use crate::{JwtConfig, JwtError, Result, StandardClaims, TokenPair};
 use jsonwebtoken::{DecodingKey, EncodingKey, Header, TokenData, Validation, decode, encode};
 use serde::{Serialize, de::DeserializeOwned};
 
+/// Select the aws-lc-rs backend as jsonwebtoken's process-wide crypto
+/// provider.
+///
+/// jsonwebtoken picks its provider from crate features; if another crate in
+/// the same build enables its `rust_crypto` feature as well, feature
+/// unification turns on both and the automatic selection panics on first use.
+/// Installing explicitly avoids that. Installation can only succeed once per
+/// process; an `Err` means a provider is already installed (by us or by the
+/// application), which is fine.
+fn install_crypto_provider() {
+    let _ = jsonwebtoken::crypto::aws_lc::DEFAULT_PROVIDER.install_default();
+}
+
 /// JWT service for token operations
 #[derive(Clone)]
 pub struct JwtService {
@@ -29,9 +42,25 @@ impl JwtService {
     const ACCESS_TOKEN_USE: &'static str = "access";
     /// Value of [`TOKEN_USE_CLAIM`](Self::TOKEN_USE_CLAIM) minted onto refresh tokens.
     const REFRESH_TOKEN_USE: &'static str = "refresh";
+    /// JOSE `typ` header placed on access tokens minted by
+    /// [`generate_token_pair`](JwtService::generate_token_pair) (RFC 9068).
+    pub const ACCESS_TOKEN_TYP: &'static str = "at+jwt";
+    /// JOSE `typ` header placed on refresh tokens minted by
+    /// [`generate_token_pair`](JwtService::generate_token_pair). Refresh
+    /// tokens are rejected by [`verify_access`](JwtService::verify_access) on
+    /// this header as well as on their `token_use` claim.
+    pub const REFRESH_TOKEN_TYP: &'static str = "refresh+jwt";
 
     /// Create a new JWT service
+    ///
+    /// # Errors
+    ///
+    /// Fails if the key material is missing or invalid for the configured
+    /// algorithm, including an HMAC secret that does not pass
+    /// [`validate_hmac_secret`](crate::config::validate_hmac_secret).
     pub fn new(config: JwtConfig) -> Result<Self> {
+        install_crypto_provider();
+        config.validate()?;
         let encoding_key = config.encoding_key()?;
         let decoding_key = config.decoding_key()?;
         let validation = config.validation();
@@ -54,6 +83,8 @@ impl JwtService {
     ///
     /// [`sign`]: JwtService::sign
     pub fn verify_only(config: JwtConfig) -> Result<Self> {
+        install_crypto_provider();
+        config.validate()?;
         let decoding_key = config.decoding_key()?;
         let validation = config.validation();
 
@@ -67,6 +98,11 @@ impl JwtService {
 
     /// Sign a token with claims
     pub fn sign<T: Serialize>(&self, claims: &T) -> Result<String> {
+        self.sign_with_typ(claims, None)
+    }
+
+    /// Sign `claims`, overriding the JOSE `typ` header when `typ` is `Some`.
+    fn sign_with_typ<T: Serialize>(&self, claims: &T, typ: Option<&str>) -> Result<String> {
         let encoding_key = self.encoding_key.as_ref().ok_or_else(|| {
             JwtError::ConfigError(
                 "signing key not available: this JwtService was constructed with \
@@ -74,24 +110,73 @@ impl JwtService {
                     .to_string(),
             )
         })?;
-        let header = Header::new(self.config.algorithm);
+        let mut header = Header::new(self.config.algorithm);
+        if let Some(typ) = typ {
+            header.typ = Some(typ.to_string());
+        }
         encode(&header, claims, encoding_key).map_err(JwtError::from)
     }
 
-    /// Verify and decode a token
+    /// Verify and decode a token.
+    ///
+    /// Checks the signature, algorithm and the configured time/issuer/audience
+    /// constraints, but **not** what kind of token it is: a refresh token from
+    /// [`generate_token_pair`](JwtService::generate_token_pair) also passes.
+    /// To authenticate a request, use [`verify_access`](JwtService::verify_access).
     pub fn verify<T: DeserializeOwned>(&self, token: &str) -> Result<T> {
-        let token_data: TokenData<T> = decode(token, &self.decoding_key, &self.validation)
-            .map_err(|e| match e.kind() {
-                jsonwebtoken::errors::ErrorKind::ExpiredSignature => JwtError::TokenExpired,
-                jsonwebtoken::errors::ErrorKind::InvalidSignature => JwtError::InvalidSignature,
-                _ => JwtError::EncodingError(e),
-            })?;
-
-        Ok(token_data.claims)
+        Ok(self.verify_data(token)?.claims)
     }
 
-    /// Decode without verification (useful for inspecting tokens)
-    pub fn decode_unverified<T: DeserializeOwned>(&self, token: &str) -> Result<T> {
+    fn verify_data<T: DeserializeOwned>(&self, token: &str) -> Result<TokenData<T>> {
+        decode(token, &self.decoding_key, &self.validation).map_err(|e| match e.kind() {
+            jsonwebtoken::errors::ErrorKind::ExpiredSignature => JwtError::TokenExpired,
+            jsonwebtoken::errors::ErrorKind::InvalidSignature => JwtError::InvalidSignature,
+            _ => JwtError::EncodingError(e),
+        })
+    }
+
+    /// Verify a token presented as an **access** credential (e.g. a bearer
+    /// token on a request) and decode its claims.
+    ///
+    /// On top of [`verify`](JwtService::verify), this rejects refresh tokens:
+    /// a token whose `token_use` claim is present and not `"access"`, or whose
+    /// `typ` header is [`REFRESH_TOKEN_TYP`](Self::REFRESH_TOKEN_TYP), fails
+    /// with [`JwtError::InvalidToken`]. Tokens with no `token_use` claim (for
+    /// example ones minted with [`sign`](JwtService::sign) or
+    /// [`sign_standard`](JwtService::sign_standard)) are accepted.
+    pub fn verify_access<T: DeserializeOwned>(&self, token: &str) -> Result<T> {
+        let data: TokenData<serde_json::Value> = self.verify_data(token)?;
+        if data.header.typ.as_deref() == Some(Self::REFRESH_TOKEN_TYP) {
+            return Err(JwtError::InvalidToken(
+                "refresh token presented as an access token".to_string(),
+            ));
+        }
+        match data.claims.get(Self::TOKEN_USE_CLAIM) {
+            None => {}
+            Some(serde_json::Value::String(u)) if u == Self::ACCESS_TOKEN_USE => {}
+            Some(other) => {
+                return Err(JwtError::InvalidToken(format!(
+                    "expected an access token (token_use = \"{}\"), got token_use = {other}",
+                    Self::ACCESS_TOKEN_USE
+                )));
+            }
+        }
+        serde_json::from_value(data.claims).map_err(|e| JwtError::SerializationError(e.to_string()))
+    }
+
+    /// Decode a token's claims **without verifying its signature or any
+    /// claim** (expiry, issuer, audience, `nbf`).
+    ///
+    /// # Security
+    ///
+    /// The returned claims are attacker-controlled: anyone can mint a token
+    /// with arbitrary claims. Never use them for authentication,
+    /// authorization, tenant selection, or any other trust decision — use
+    /// [`verify`](JwtService::verify) / [`verify_access`](JwtService::verify_access)
+    /// for that. Legitimate uses are diagnostics and reading the claims of a
+    /// token *you already trust by other means*, such as one you just
+    /// verified or one you minted yourself.
+    pub fn decode_unverified_insecure<T: DeserializeOwned>(&self, token: &str) -> Result<T> {
         let token_data: TokenData<T> =
             jsonwebtoken::dangerous::insecure_decode(token).map_err(JwtError::from)?;
 
@@ -131,8 +216,8 @@ impl JwtService {
         )?;
         let refresh_claims = Self::set_token_use(refresh_claims, Self::REFRESH_TOKEN_USE)?;
 
-        let access_token = self.sign(&access_claims)?;
-        let refresh_token = self.sign(&refresh_claims)?;
+        let access_token = self.sign_with_typ(&access_claims, Some(Self::ACCESS_TOKEN_TYP))?;
+        let refresh_token = self.sign_with_typ(&refresh_claims, Some(Self::REFRESH_TOKEN_TYP))?;
 
         Ok(TokenPair::new(
             access_token,
@@ -144,8 +229,9 @@ impl JwtService {
 
     /// Refresh an access token
     ///
-    /// Verifies the incoming token, checks that it carries `token_use: "refresh"` (see
-    /// [`generate_token_pair`]), and if so re-issues a brand new token pair from its claims.
+    /// Verifies the incoming token, checks that it carries both the
+    /// [`REFRESH_TOKEN_TYP`](Self::REFRESH_TOKEN_TYP) `typ` header and `token_use: "refresh"`
+    /// (see [`generate_token_pair`]), and if so re-issues a brand new token pair from its claims.
     /// A currently-valid *access* token is rejected with [`JwtError::InvalidToken`] rather
     /// than being honored, so a leaked access token cannot be laundered into a fresh
     /// access+refresh pair. Both new tokens get freshly computed expirations, regardless of
@@ -156,9 +242,16 @@ impl JwtService {
         &self,
         refresh_token: &str,
     ) -> Result<TokenPair> {
-        // Verify generically first so the `token_use` discriminator can be inspected before
-        // the claims are trusted as coming from a genuine refresh token.
-        let raw: serde_json::Value = self.verify(refresh_token)?;
+        // Verify generically first so the `token_use` discriminator and the `typ` header can be
+        // inspected before the claims are trusted as coming from a genuine refresh token.
+        let data: TokenData<serde_json::Value> = self.verify_data(refresh_token)?;
+        if data.header.typ.as_deref() != Some(Self::REFRESH_TOKEN_TYP) {
+            return Err(JwtError::InvalidToken(format!(
+                "expected a refresh token (typ = \"{}\")",
+                Self::REFRESH_TOKEN_TYP
+            )));
+        }
+        let raw = data.claims;
 
         let token_use = raw.get(Self::TOKEN_USE_CLAIM).and_then(|v| v.as_str());
         if token_use != Some(Self::REFRESH_TOKEN_USE) {
@@ -284,6 +377,7 @@ impl JwtService {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::{OTHER_TEST_SECRET, TEST_SECRET};
     use serde::{Deserialize, Serialize};
 
     #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -294,7 +388,7 @@ mod tests {
     }
 
     fn test_config() -> JwtConfig {
-        JwtConfig::new("test-secret".to_string())
+        JwtConfig::new(TEST_SECRET.to_string()).unwrap()
     }
 
     fn test_claims() -> TestClaims {
@@ -308,7 +402,7 @@ mod tests {
 
     #[test]
     fn test_sign_and_verify() {
-        let config = JwtConfig::new("test-secret".to_string());
+        let config = JwtConfig::new(TEST_SECRET.to_string()).unwrap();
         let service = JwtService::new(config).unwrap();
 
         let exp = (chrono::Utc::now() + chrono::Duration::hours(1)).timestamp();
@@ -328,10 +422,10 @@ mod tests {
 
     #[test]
     fn test_invalid_signature() {
-        let config1 = JwtConfig::new("secret1".to_string());
+        let config1 = JwtConfig::new(OTHER_TEST_SECRET.to_string()).unwrap();
         let service1 = JwtService::new(config1).unwrap();
 
-        let config2 = JwtConfig::new("secret2".to_string());
+        let config2 = JwtConfig::new(TEST_SECRET.to_string()).unwrap();
         let service2 = JwtService::new(config2).unwrap();
 
         let exp = (chrono::Utc::now() + chrono::Duration::hours(1)).timestamp();
@@ -350,7 +444,7 @@ mod tests {
 
     #[test]
     fn test_token_pair_generation() {
-        let config = JwtConfig::new("test-secret".to_string());
+        let config = JwtConfig::new(TEST_SECRET.to_string()).unwrap();
         let service = JwtService::new(config).unwrap();
 
         let exp = (chrono::Utc::now() + chrono::Duration::hours(1)).timestamp();
@@ -427,7 +521,7 @@ mod tests {
 
     #[test]
     fn test_decode_unverified() {
-        let config = JwtConfig::new("test-secret".to_string());
+        let config = JwtConfig::new(TEST_SECRET.to_string()).unwrap();
         let service = JwtService::new(config).unwrap();
 
         let exp = (chrono::Utc::now() + chrono::Duration::hours(1)).timestamp();
@@ -439,14 +533,15 @@ mod tests {
         };
 
         let token = service.sign(&claims).unwrap();
-        let decoded: TestClaims = service.decode_unverified(&token).unwrap();
+        let decoded: TestClaims = service.decode_unverified_insecure(&token).unwrap();
 
         assert_eq!(decoded, claims);
     }
 
     #[test]
     fn sign_standard_merges_configured_and_additional_claims() {
-        let config = JwtConfig::new("test-secret".to_string())
+        let config = JwtConfig::new(TEST_SECRET.to_string())
+            .unwrap()
             .with_issuer("test-issuer".to_string())
             .with_audience(vec!["test-audience".to_string()]);
         let service = JwtService::new(config).unwrap();
@@ -502,7 +597,8 @@ mod tests {
     /// `additional_claims` before merging (see `RESERVED_STANDARD_CLAIMS`).
     #[test]
     fn sign_standard_additional_claims_cannot_clobber_reserved_keys() {
-        let config = JwtConfig::new("test-secret".to_string())
+        let config = JwtConfig::new(TEST_SECRET.to_string())
+            .unwrap()
             .with_issuer("test-issuer".to_string())
             .with_audience(vec!["test-audience".to_string()]);
         let service = JwtService::new(config).unwrap();
@@ -597,7 +693,7 @@ mod tests {
         use base64::Engine as _;
         use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 
-        let config = JwtConfig::new("test-secret".to_string());
+        let config = JwtConfig::new(TEST_SECRET.to_string()).unwrap();
         let service = JwtService::new(config).unwrap();
 
         let header = serde_json::json!({"alg": "none", "typ": "JWT"});
@@ -627,7 +723,7 @@ mod tests {
         // Variant: explicitly confirm rejection against a service configured for HS256 (the
         // common default algorithm for this crate's `JwtConfig::new`), matching `test_config`'s
         // default rather than relying on that default implicitly.
-        let hs256_config = JwtConfig::new("test-secret".to_string());
+        let hs256_config = JwtConfig::new(TEST_SECRET.to_string()).unwrap();
         assert_eq!(
             hs256_config.algorithm,
             jsonwebtoken::Algorithm::HS256,
@@ -671,7 +767,7 @@ mod tests {
 
         // Forge an HS256 token, using the RSA *public key* PEM bytes as the HMAC secret — the
         // textbook algorithm-confusion attack, since the public key is not secret.
-        let hs256_config = JwtConfig::new(RSA_PUBLIC_KEY_PEM.to_string());
+        let hs256_config = JwtConfig::new(RSA_PUBLIC_KEY_PEM.to_string()).unwrap();
         let hs256_service = JwtService::new(hs256_config).unwrap();
         let forged_token = hs256_service.sign(&claims).unwrap();
 
@@ -688,7 +784,7 @@ mod tests {
     /// `JwtError::TokenExpired`.
     #[test]
     fn test_expired_token_rejected() {
-        let config = JwtConfig::new("test-secret".to_string());
+        let config = JwtConfig::new(TEST_SECRET.to_string()).unwrap();
         let service = JwtService::new(config).unwrap();
 
         let exp = chrono::Utc::now().timestamp() - 1000;
