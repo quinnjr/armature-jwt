@@ -1,6 +1,6 @@
 [package]
 name = "armature-jwt"
-version = "0.4.0"
+version = "0.5.0"
 edition = "2024"
 rust-version = "1.94.1"
 autobenches = false  # Disable auto-discovery, use explicit [[bench]] only
@@ -13,8 +13,8 @@ keywords = ["jwt", "token", "authentication", "security"]
 categories = ["authentication", "web-programming"]
 
 [dependencies]
-armature-core = { version = "0.10" }
-armature-log = { version = "0.2" }
+armature-core = { version = "0.11" }
+armature-log = { version = "0.3" }
 # `aws_lc_rs` backend (not `rust_crypto`): the RustCrypto backend pulls the `rsa`
 # crate, which is affected by the Marvin timing side channel (RUSTSEC-2023-0071)
 # with no fixed release. aws-lc-rs is constant-time and FIPS-capable.
