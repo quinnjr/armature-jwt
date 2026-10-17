@@ -24,7 +24,7 @@
 //!   segment, and a signature lifted from a token issued under a different
 //!   secret. Each must be rejected.
 //!
-//! `decode_unverified` is exercised alongside it. It reads claims without
+//! `decode_unverified_insecure` is exercised alongside it. It reads claims without
 //! checking the signature, so it is *expected* to accept what `verify` rejects;
 //! what is asserted is that it does not panic on arbitrary input, and that it
 //! agrees with `verify` whenever `verify` accepts — a token cannot verify as one
@@ -59,6 +59,11 @@ struct Case<'a> {
     sig: &'a [u8],
 }
 
+/// `JwtConfig::new` rejects HMAC secrets shorter than 32 bytes, so the
+/// fuzzer's secret is appended to a fixed random prefix: every case still gets
+/// its own key without most inputs being discarded as too short.
+const SECRET_PREFIX: &str = "kV9pQ2xR7tW4yZ1bN6mC3fH8jL5sD0gA";
+
 fuzz_target!(|case: Case<'_>| {
     if case.secret.is_empty() || case.forged.len() > 4096 || case.subject.len() > 256 {
         return;
@@ -67,14 +72,15 @@ fuzz_target!(|case: Case<'_>| {
         return;
     }
 
-    let Ok(service) = JwtService::new(JwtConfig::new(case.secret.to_string())) else {
+    let Ok(service) = JwtConfig::new(format!("{SECRET_PREFIX}{}", case.secret)).and_then(JwtService::new)
+    else {
         return;
     };
 
-    // `decode_unverified` reads the payload without checking the signature, so
+    // `decode_unverified_insecure` reads the payload without checking the signature, so
     // it is expected to accept things `verify` rejects. It must still not
     // panic: callers use it to decide how to handle a token.
-    let _ = service.decode_unverified::<TestClaims>(case.forged);
+    let _ = service.decode_unverified_insecure::<TestClaims>(case.forged);
 
     // Soundness. An arbitrary string must not verify unless the fuzzer
     // reproduced a token this service would itself have issued.
@@ -97,7 +103,7 @@ fuzz_target!(|case: Case<'_>| {
         URL_SAFE_NO_PAD.encode(case.payload_json),
         URL_SAFE_NO_PAD.encode(case.sig),
     );
-    let _ = service.decode_unverified::<TestClaims>(&assembled);
+    let _ = service.decode_unverified_insecure::<TestClaims>(&assembled);
     if let Ok(claims) = service.verify::<TestClaims>(&assembled) {
         // Re-signing is not a usable oracle here: the fuzzer's header need not
         // be byte-identical to the one this crate emits even when it names the
@@ -118,9 +124,9 @@ fuzz_target!(|case: Case<'_>| {
             case.payload_json,
         );
         assert_eq!(
-            service.decode_unverified::<TestClaims>(&assembled).ok(),
+            service.decode_unverified_insecure::<TestClaims>(&assembled).ok(),
             Some(claims),
-            "verify and decode_unverified disagreed about the claims in {assembled:?}",
+            "verify and decode_unverified_insecure disagreed about the claims in {assembled:?}",
         );
     }
 
@@ -214,7 +220,8 @@ fuzz_target!(|case: Case<'_>| {
     // A signature lifted from a token issued under a different secret. Appending
     // to the secret guarantees a different key without needing the fuzzer to
     // supply two distinct non-empty strings.
-    let Ok(other) = JwtService::new(JwtConfig::new(format!("{}#", case.secret))) else {
+    let Ok(other) = JwtConfig::new(format!("{SECRET_PREFIX}{}#", case.secret)).and_then(JwtService::new)
+    else {
         return;
     };
     let Ok(other_issued) = other.sign(&claims) else {

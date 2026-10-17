@@ -12,7 +12,7 @@
 //!
 //! # fn main() -> Result<(), Box<dyn std::error::Error>> {
 //! // Create JWT configuration
-//! let config = JwtConfig::new("your-secret-key".to_string());
+//! let config = JwtConfig::new("kV9pQ2xR7tW4yZ1bN6mC3fH8jL5sD0gA".to_string())?;
 //! let manager = JwtManager::new(config)?;
 //!
 //! // Create claims
@@ -43,7 +43,7 @@
 //! }
 //!
 //! # fn main() -> Result<(), Box<dyn std::error::Error>> {
-//! let config = JwtConfig::new("secret".to_string());
+//! let config = JwtConfig::new("kV9pQ2xR7tW4yZ1bN6mC3fH8jL5sD0gA".to_string())?;
 //! let manager = JwtManager::new(config)?;
 //!
 //! let claims = Claims::new(UserClaims {
@@ -72,6 +72,14 @@ pub use error::{JwtError, Result};
 pub use service::JwtService;
 pub use token::{Token, TokenPair};
 
+/// Secrets shared by this crate's unit tests. Long, random-looking values that
+/// pass [`config::validate_hmac_secret`].
+#[cfg(test)]
+pub(crate) mod test_support {
+    pub const TEST_SECRET: &str = "kV9pQ2xR7tW4yZ1bN6mC3fH8jL5sD0gA";
+    pub const OTHER_TEST_SECRET: &str = "Xw3Ee8Rr1Tt6Yy9Uu2Ii5Oo0Pp7Aa4Ss";
+}
+
 // Re-export jsonwebtoken types
 pub use jsonwebtoken::{Algorithm, DecodingKey, EncodingKey, Header, Validation};
 
@@ -92,7 +100,7 @@ impl JwtManager {
     /// use armature_jwt::{JwtConfig, JwtManager};
     ///
     /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
-    /// let config = JwtConfig::new("my-secret".to_string());
+    /// let config = JwtConfig::new("kV9pQ2xR7tW4yZ1bN6mC3fH8jL5sD0gA".to_string())?;
     /// let manager = JwtManager::new(config)?;
     /// # Ok(())
     /// # }
@@ -118,14 +126,14 @@ impl JwtManager {
     /// use armature_jwt::{JwtConfig, JwtManager, StandardClaims};
     ///
     /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
-    /// let signer = JwtManager::new(JwtConfig::new("shared-secret".to_string()))?;
+    /// let signer = JwtManager::new(JwtConfig::new("kV9pQ2xR7tW4yZ1bN6mC3fH8jL5sD0gA".to_string())?)?;
     /// let token = signer.sign(
     ///     &StandardClaims::new()
     ///         .with_subject("user".to_string())
     ///         .with_expiration(3600),
     /// )?;
     ///
-    /// let verifier = JwtManager::verify_only(JwtConfig::new("shared-secret".to_string()))?;
+    /// let verifier = JwtManager::verify_only(JwtConfig::new("kV9pQ2xR7tW4yZ1bN6mC3fH8jL5sD0gA".to_string())?)?;
     /// let claims: StandardClaims = verifier.verify(&token)?;
     /// assert_eq!(claims.sub, Some("user".to_string()));
     /// # Ok(())
@@ -146,7 +154,7 @@ impl JwtManager {
     /// use armature_jwt::{JwtConfig, JwtManager, StandardClaims};
     ///
     /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
-    /// let manager = JwtManager::new(JwtConfig::new("secret".to_string()))?;
+    /// let manager = JwtManager::new(JwtConfig::new("kV9pQ2xR7tW4yZ1bN6mC3fH8jL5sD0gA".to_string())?)?;
     /// let claims = StandardClaims::new().with_subject("user".to_string());
     /// let token = manager.sign(&claims)?;
     /// assert!(!token.is_empty());
@@ -166,7 +174,7 @@ impl JwtManager {
     /// use armature_jwt::{JwtConfig, JwtManager, StandardClaims};
     ///
     /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
-    /// let manager = JwtManager::new(JwtConfig::new("secret".to_string()))?;
+    /// let manager = JwtManager::new(JwtConfig::new("kV9pQ2xR7tW4yZ1bN6mC3fH8jL5sD0gA".to_string())?)?;
     /// let claims = StandardClaims::new()
     ///     .with_subject("user".to_string())
     ///     .with_expiration(3600); // Add expiration
@@ -208,20 +216,30 @@ impl JwtManager {
         self.service.refresh_token::<T>(refresh_token)
     }
 
-    /// Decode a token without verification (useful for inspecting expired tokens)
-    pub fn decode_unverified<T: serde::de::DeserializeOwned>(&self, token: &str) -> Result<T> {
-        self.service.decode_unverified(token)
+    /// Verify a token presented as an **access** credential and decode it.
+    ///
+    /// Like [`verify`](Self::verify), but rejects refresh tokens issued by
+    /// [`generate_token_pair`](Self::generate_token_pair) (their `token_use`
+    /// claim / `typ` header). This is the method to authenticate requests
+    /// with; see [`JwtService::verify_access`].
+    pub fn verify_access<T: serde::de::DeserializeOwned>(&self, token: &str) -> Result<T> {
+        trace!("Verifying JWT access token");
+        self.service.verify_access(token)
+    }
+
+    /// Decode a token's claims **without verifying it**. The claims are
+    /// attacker-controlled; never base a trust decision on them. See
+    /// [`JwtService::decode_unverified_insecure`].
+    pub fn decode_unverified_insecure<T: serde::de::DeserializeOwned>(
+        &self,
+        token: &str,
+    ) -> Result<T> {
+        self.service.decode_unverified_insecure(token)
     }
 
     /// Get the configuration
     pub fn config(&self) -> &JwtConfig {
         self.service.config()
-    }
-}
-
-impl Default for JwtManager {
-    fn default() -> Self {
-        Self::new(JwtConfig::default()).expect("Failed to create default JwtManager")
     }
 }
 
@@ -243,6 +261,7 @@ pub mod prelude {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::TEST_SECRET;
     use serde::{Deserialize, Serialize};
 
     #[derive(Debug, Serialize, Deserialize, PartialEq)]
@@ -254,7 +273,7 @@ mod tests {
 
     #[test]
     fn test_sign_and_verify() {
-        let config = JwtConfig::new("test-secret".to_string());
+        let config = JwtConfig::new(TEST_SECRET.to_string()).unwrap();
         let manager = JwtManager::new(config).unwrap();
 
         let exp = (chrono::Utc::now() + chrono::Duration::hours(1)).timestamp();
@@ -274,7 +293,7 @@ mod tests {
 
     #[test]
     fn test_invalid_token() {
-        let config = JwtConfig::new("test-secret".to_string());
+        let config = JwtConfig::new(TEST_SECRET.to_string()).unwrap();
         let manager = JwtManager::new(config).unwrap();
 
         let result: Result<TestClaims> = manager.verify("invalid.token.here");

@@ -25,6 +25,7 @@ fn bench_jwt_operations(c: &mut Criterion) {
     let mut group = c.benchmark_group("jwt");
 
     let config = JwtConfig::new("test_secret_key_32_bytes_long!!!".to_string())
+        .unwrap()
         .with_expiration(Duration::from_secs(3600));
     let manager = JwtManager::new(config).unwrap();
 
@@ -52,8 +53,9 @@ fn bench_jwt_operations(c: &mut Criterion) {
 
     // Test different algorithms
     for algo in [Algorithm::HS256, Algorithm::HS384, Algorithm::HS512].iter() {
-        let config =
-            JwtConfig::new("test_secret_key_32_bytes_long!!!".to_string()).with_algorithm(*algo);
+        let config = JwtConfig::new("test_secret_key_32_bytes_long!!!".to_string())
+            .unwrap()
+            .with_algorithm(*algo);
         let manager = JwtManager::new(config).unwrap();
 
         group.bench_function(format!("sign_{:?}", algo), |b| {
