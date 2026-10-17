@@ -9,6 +9,8 @@ Earlier changes are recorded in the workspace [`CHANGELOG.md`](../CHANGELOG.md).
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-10-17
+
 ### Security
 
 - **Breaking:** `JwtConfig::new` now returns `Result<JwtConfig>` and rejects HMAC secrets that are empty, shorter than 32 bytes (`MIN_HMAC_SECRET_LEN`), known placeholders (`change-me-in-production`, `default-secret-change-me`, `CHANGE_ME_IN_PRODUCTION`, `secret`, …) or trivially low-entropy. `JwtService::new`/`verify_only` (and so `JwtManager::new`/`verify_only`) re-validate the config, so a weak secret assigned to the public `secret` field or deserialized from a file is rejected too. New `config::validate_hmac_secret` and `JwtConfig::validate`. Migration: `JwtConfig::new(secret)?` with a ≥ 32-byte random secret (e.g. `openssl rand -base64 48`).
