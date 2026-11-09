@@ -13,7 +13,7 @@ keywords = ["jwt", "token", "authentication", "security"]
 categories = ["authentication", "web-programming"]
 
 [dependencies]
-armature-core = { version = "0.12" }
+armature-core = { version = "0.13" }
 armature-log = { version = "0.3" }
 # `aws_lc_rs` backend (not `rust_crypto`): the RustCrypto backend pulls the `rsa`
 # crate, which is affected by the Marvin timing side channel (RUSTSEC-2023-0071)
